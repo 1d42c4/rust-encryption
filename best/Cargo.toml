@@ -24,7 +24,7 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Securit
 
 [dev-dependencies]
 proptest = "1.9"
-rstest = "0.26"
+rstest = "0.27"
 sha2 = "0.10"
 flate2 = "1.1"
 
