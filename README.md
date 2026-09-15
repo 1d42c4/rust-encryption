@@ -75,7 +75,7 @@ There is no repository-wide `Cargo.toml`. Build from the directory of the app
 you want, for example:
 
 ```console
-git clone https://github.com/knightway8/rust-encryption.git
+git clone https://github.com/1d42c4/rust-encryption.git
 cd rust-encryption/x2
 cargo build --locked --release --bins
 cargo test --locked --all-targets
