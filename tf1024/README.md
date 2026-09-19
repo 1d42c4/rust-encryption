@@ -19,6 +19,11 @@ not paths. Existing output files and an existing key are never overwritten.
 On Windows, device names, alternate data streams, and names ending in a dot or
 space are rejected so aliases cannot bypass the protection for `key.key`.
 
+New keys and temporary outputs are private from creation: Unix mode `0600`, or
+a protected Windows DACL allowing only the file owner and SYSTEM. Existing
+files keep their current permissions. Windows API calls for private creation
+are isolated in `src/private_file.rs`.
+
 Back up `key.key` securely. Losing it makes encrypted files unrecoverable. Anyone
 who obtains it can decrypt the files.
 

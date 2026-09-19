@@ -297,7 +297,8 @@ struct AtomicOutput {
 impl AtomicOutput {
     fn create(destination: &Path) -> Result<Self, Error> {
         let parent = output_parent(destination);
-        let temporary = NamedTempFile::new_in(parent)
+        let temporary = tempfile::Builder::new()
+            .make_in(parent, crate::private_file::create_private)
             .map_err(|e| Error::io("cannot create private temporary output", parent, e))?;
         Ok(Self {
             temporary,
@@ -1533,4 +1534,16 @@ mod tests {
             0o600
         );
     }
+}
+
+#[cfg(all(test, windows))]
+#[test]
+fn atomic_plaintext_staging_and_publication_have_protected_windows_permissions() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("output");
+    let mut output = AtomicOutput::create(&path).unwrap();
+    crate::private_file::assert_private(output.file_mut());
+    output.file_mut().write_all(b"private plaintext").unwrap();
+    output.commit().unwrap();
+    crate::private_file::assert_private(&File::open(path).unwrap());
 }

@@ -34,6 +34,8 @@ Existing keys and output files are never overwritten.
 - X25519 recipient encryption, HKDF-SHA-256 key derivation, and
   ChaCha20-Poly1305 authenticated encryption.
 - Authenticated 64 KiB streaming chunks, so large files do not consume large RAM.
+- The age header and payload nonce together are limited to 64 KiB. Oversized
+  headers are rejected by both `verify` and `D` before parsing consumes more data.
 - Encryption output is finalized, flushed, and synchronized before an atomic,
   no-overwrite commit.
 - Decryption performs a full authentication pass before creating plaintext,
@@ -43,6 +45,13 @@ Existing keys and output files are never overwritten.
   entire ciphertext is authenticated.
 - Strict filename confinement, regular-file checks, key-pair matching, and
   private-key permission checks on Unix.
+- Windows filename aliases (trailing dots/spaces, alternate streams and device
+  names) are rejected. Open file identities also prevent using hard links to
+  `key.key` or `key.pub` as data inputs.
+- New keys and temporary outputs use Unix mode `0600` or a protected Windows
+  DACL allowing only the file owner and SYSTEM, before writing any bytes.
+  Windows API calls are isolated in `private_file.rs`; unsafe code is denied in
+  the rest of the library. Existing files keep their current permissions.
 - Plugin, SSH, passphrase, and ASCII-armor features are disabled to minimize the
   attack surface.
 

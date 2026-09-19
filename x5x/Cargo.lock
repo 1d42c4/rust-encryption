@@ -1180,6 +1180,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "threefish",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 
