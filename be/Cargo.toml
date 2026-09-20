@@ -10,6 +10,7 @@ age = { version = "0.12.1", default-features = false }
 anyhow = "1.0"
 clap = { version = "4.5", features = ["derive"] }
 sha2 = "0.10"
+same-file = "1.0.6"
 tempfile = "3.21"
 
 [dev-dependencies]
@@ -20,3 +21,6 @@ codegen-units = 1
 lto = "thin"
 overflow-checks = true
 strip = "symbols"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem"] }

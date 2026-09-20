@@ -252,7 +252,8 @@ tests). test-deep-each.bat runs 126 additional process-level robustness tests
 for each of the 21 non-x4x applications (2,646 tests). The source declares 147
 attributable tests per application, including x4x's 21 CLI and 126 internal
 tests. One x4x test is Unix-only and one shared test is Windows-only, so the
-compiled mix changes by platform while the total remains 3,291.
+compiled mix changes by platform. Additional private-file creation and
+Windows DACL regression tests now supplement that original inventory.
 
 To run just one binary's original suite, name its bin-prefixed integration
 target directly; to run one deep suite, filter the deep_apps target by module:
@@ -296,3 +297,9 @@ production 512 MiB cost and run keymake's full 256 MiB settings twice. They are
 separate so routine tests do not make those large allocations. `cargo audit`
 requires the separately installed cargo-audit tool and checks the locked
 dependency graph against the current RustSec advisory database.
+
+New keys and temporary outputs are private from creation: Unix mode `0600`, or
+a protected Windows DACL allowing only the file owner and SYSTEM. The DACL
+also protects OTP replacement files and x4x plaintext staging. Existing files
+keep their current permissions. Windows API calls are isolated in
+`src/private_file.rs`; unsafe code remains denied elsewhere.

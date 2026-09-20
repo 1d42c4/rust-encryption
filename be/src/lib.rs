@@ -1,8 +1,11 @@
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
+mod private_file;
+
+use std::cell::Cell;
 use std::ffi::OsStr;
 use std::fs::{self, File};
-use std::io::{self, BufReader, BufWriter, Read, Write};
+use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
 
@@ -15,6 +18,8 @@ pub const SECRET_KEY_FILE: &str = "key.key";
 pub const PUBLIC_KEY_FILE: &str = "key.pub";
 const MAX_KEY_FILE_SIZE: u64 = 4096;
 const IO_BUFFER_SIZE: usize = 1024 * 1024;
+// Includes the age header and the 16-byte payload nonce read by the constructor.
+const MAX_AGE_PREFIX_BYTES: usize = 64 * 1024;
 
 pub fn keygen_in(directory: &Path) -> Result<String> {
     ensure_directory(directory)?;
@@ -59,6 +64,7 @@ pub fn encrypt_in(directory: &Path, input_name: &Path, output_name: &Path) -> Re
     let recipient = load_recipient(directory)?;
 
     let input = open_regular_file(&input_path, "input")?;
+    reject_key_alias(directory, &input)?;
     let mut input = BufReader::with_capacity(IO_BUFFER_SIZE, input);
     let temporary = private_tempfile(directory)?;
     let output = BufWriter::with_capacity(IO_BUFFER_SIZE, temporary);
@@ -216,15 +222,69 @@ struct Decryption<W> {
     bytes: u64,
 }
 
+// Limit the bytes consumed by age's header parser, then release the limit for
+// payload streaming. The parser cannot allocate an unbounded line or stanza.
+struct HeaderLimited<'a, R> {
+    inner: R,
+    budget: &'a Cell<Option<usize>>,
+}
+
+impl<R: BufRead> Read for HeaderLimited<'_, R> {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        if output.is_empty() {
+            return Ok(0);
+        }
+        let available = self.fill_buf()?;
+        let count = output.len().min(available.len());
+        output[..count].copy_from_slice(&available[..count]);
+        self.consume(count);
+        Ok(count)
+    }
+}
+
+impl<R: BufRead> BufRead for HeaderLimited<'_, R> {
+    fn fill_buf(&mut self) -> io::Result<&[u8]> {
+        match self.budget.get() {
+            Some(0) => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "age header and nonce exceed the 64 KiB limit",
+            )),
+            Some(left) => {
+                let bytes = self.inner.fill_buf()?;
+                Ok(&bytes[..bytes.len().min(left)])
+            }
+            None => self.inner.fill_buf(),
+        }
+    }
+
+    fn consume(&mut self, amount: usize) {
+        if let Some(left) = self.budget.get() {
+            self.budget.set(Some(left.saturating_sub(amount)));
+        }
+        self.inner.consume(amount);
+    }
+}
+
 fn decrypt_and_hash<W: Write>(
     path: &Path,
     identity: &Identity,
     output: W,
 ) -> Result<Decryption<W>> {
     let input = open_regular_file(path, "encrypted input")?;
-    let input = BufReader::with_capacity(IO_BUFFER_SIZE, input);
+    reject_key_alias(
+        path.parent().context("input has no parent directory")?,
+        &input,
+    )?;
+    // Enforce the limit while age itself parses, including malformed syntax;
+    // looking for a textual footer alone could be fooled by an invalid footer.
+    let budget = Cell::new(Some(MAX_AGE_PREFIX_BYTES));
+    let input = HeaderLimited {
+        inner: BufReader::with_capacity(IO_BUFFER_SIZE, input),
+        budget: &budget,
+    };
     let decryptor = age::Decryptor::new_buffered(input)
         .with_context(|| format!("{} is not a valid age file", path.display()))?;
+    budget.set(None); // The authenticated payload remains unlimited and streaming.
     if decryptor.is_scrypt() {
         bail!("passphrase-encrypted age files are not supported by this key-based app");
     }
@@ -301,7 +361,11 @@ fn reject_key_name(path: &Path) -> Result<()> {
 fn bare_name<'a>(path: &'a Path, role: &str) -> Result<&'a OsStr> {
     let mut components = path.components();
     match (components.next(), components.next()) {
-        (Some(Component::Normal(name)), None) => Ok(name),
+        (Some(Component::Normal(name)), None) => {
+            #[cfg(windows)]
+            validate_windows_name(name)?;
+            Ok(name)
+        }
         _ => bail!(
             "{role} must be a bare file name beside the executable, not a path: {}",
             path.display()
@@ -312,6 +376,60 @@ fn bare_name<'a>(path: &'a Path, role: &str) -> Result<&'a OsStr> {
 fn names_equal(left: &OsStr, right: &OsStr) -> bool {
     left.to_string_lossy()
         .eq_ignore_ascii_case(&right.to_string_lossy())
+}
+
+#[cfg(windows)]
+fn validate_windows_name(name: &OsStr) -> Result<()> {
+    let text = name.to_string_lossy();
+    if text.ends_with(['.', ' '])
+        || text
+            .chars()
+            .any(|c| c.is_ascii_control() || matches!(c, ':' | '*' | '?' | '"' | '<' | '>' | '|'))
+    {
+        bail!("filename uses an unsafe Windows spelling or alternate data stream");
+    }
+    let base = text
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches(' ')
+        .to_ascii_uppercase();
+    let numbered_device = base
+        .strip_prefix("COM")
+        .or_else(|| base.strip_prefix("LPT"))
+        .is_some_and(|suffix| {
+            matches!(
+                suffix,
+                "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+            )
+        });
+    if numbered_device
+        || matches!(
+            base.as_str(),
+            "CON" | "PRN" | "AUX" | "NUL" | "CLOCK$" | "CONIN$" | "CONOUT$"
+        )
+    {
+        bail!("filename is a reserved Windows device name");
+    }
+    Ok(())
+}
+
+fn reject_key_alias(directory: &Path, input: &File) -> Result<()> {
+    let input = same_file::Handle::from_file(input.try_clone()?)
+        .context("could not identify the input file")?;
+    for name in [SECRET_KEY_FILE, PUBLIC_KEY_FILE] {
+        let file = match File::open(directory.join(name)) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error).context("could not check protected key identity"),
+        };
+        let key = same_file::Handle::from_file(file)
+            .context("could not identify the protected key file")?;
+        if input == key {
+            bail!("key files cannot be used as input data files, including file aliases");
+        }
+    }
+    Ok(())
 }
 
 fn ensure_directory(path: &Path) -> Result<()> {
@@ -351,7 +469,7 @@ fn open_regular_file(path: &Path, role: &str) -> Result<File> {
 fn private_tempfile(directory: &Path) -> Result<tempfile::NamedTempFile> {
     tempfile::Builder::new()
         .prefix(".be-")
-        .tempfile_in(directory)
+        .make_in(directory, private_file::create_private)
         .with_context(|| {
             format!(
                 "could not create a temporary file in {}",
@@ -405,4 +523,43 @@ fn sync_directory(directory: &Path) -> Result<()> {
 #[cfg(not(unix))]
 fn sync_directory(_directory: &Path) -> Result<()> {
     Ok(())
+}
+
+#[cfg(all(test, windows))]
+#[test]
+fn generated_keys_and_plaintext_have_protected_windows_permissions() {
+    let directory = tempfile::tempdir().unwrap();
+    keygen_in(directory.path()).unwrap();
+    private_file::assert_private(&File::open(directory.path().join(SECRET_KEY_FILE)).unwrap());
+    fs::write(directory.path().join("plain"), b"private payload").unwrap();
+    encrypt_in(directory.path(), Path::new("plain"), Path::new("cipher")).unwrap();
+    decrypt_in(directory.path(), Path::new("cipher"), Path::new("restored")).unwrap();
+    private_file::assert_private(&File::open(directory.path().join("restored")).unwrap());
+    let temporary = private_tempfile(directory.path()).unwrap();
+    private_file::assert_private(temporary.as_file());
+}
+
+#[cfg(test)]
+mod header_limit_tests {
+    use super::*;
+
+    #[test]
+    fn header_limit_bounds_an_unterminated_line_and_can_release_the_payload() {
+        let budget = Cell::new(Some(64));
+        let mut reader = HeaderLimited {
+            inner: io::Cursor::new(vec![b'x'; 1024]),
+            budget: &budget,
+        };
+        let mut bytes = Vec::new();
+        assert_eq!(
+            reader.read_until(b'\n', &mut bytes).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(bytes.len(), 64);
+        assert_eq!(reader.inner.position(), 64);
+        assert_eq!(reader.read(&mut []).unwrap(), 0);
+        budget.set(None);
+        reader.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes.len(), 1024);
+    }
 }

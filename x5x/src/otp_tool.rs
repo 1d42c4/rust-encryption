@@ -51,12 +51,14 @@ pub fn xor_file_in_place(directory: &Path, input_name: &OsStr, key_name: &OsStr)
         bail!("OTP key is too short: input is {input_len} bytes but key is only {key_len} bytes");
     }
 
-    let mut temporary = tempfile::NamedTempFile::new_in(directory).with_context(|| {
-        format!(
-            "cannot create temporary output in '{}'",
-            directory.display()
-        )
-    })?;
+    let mut temporary = tempfile::Builder::new()
+        .make_in(directory, crate::private_file::create_private)
+        .with_context(|| {
+            format!(
+                "cannot create temporary output in '{}'",
+                directory.display()
+            )
+        })?;
     let mut input_buffer = Zeroizing::new(vec![0_u8; IO_BUFFER_SIZE]);
     let mut key_buffer = Zeroizing::new(vec![0_u8; IO_BUFFER_SIZE]);
     let mut remaining = input_len;

@@ -1,5 +1,10 @@
+#![deny(unsafe_code)]
+
 use std::ffi::OsStr;
-use std::fs::{self, File, OpenOptions};
+#[cfg(test)]
+use std::fs::OpenOptions;
+use std::fs::{self, File};
+mod private_file;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 
@@ -86,16 +91,7 @@ fn keygen(directory: &Path) -> Result<()> {
         anyhow::anyhow!("the operating system random generator failed: {error}")
     })?;
 
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-
-    let mut file = options
-        .open(&path)
+    let mut file = private_file::create_private(&path)
         .with_context(|| format!("could not create {}; it may already exist", path.display()))?;
     file.write_all(&*key)
         .context("could not write the key file")?;
@@ -139,7 +135,7 @@ fn encrypt(directory: &Path, input_name: &Path, output_name: &Path) -> Result<()
 
     let temporary = tempfile::Builder::new()
         .prefix(".tf1024-")
-        .tempfile_in(directory)
+        .make_in(directory, private_file::create_private)
         .with_context(|| {
             format!(
                 "could not create a temporary file in {}",
@@ -252,7 +248,7 @@ fn decrypt(directory: &Path, input_name: &Path, output_name: &Path) -> Result<()
 
     let temporary = tempfile::Builder::new()
         .prefix(".tf1024-")
-        .tempfile_in(directory)
+        .make_in(directory, private_file::create_private)
         .with_context(|| {
             format!(
                 "could not create a temporary file in {}",
@@ -712,4 +708,16 @@ mod tests {
             })
             .collect()
     }
+}
+
+#[cfg(all(test, windows))]
+#[test]
+fn generated_key_and_decrypted_output_have_protected_windows_permissions() {
+    let directory = tempfile::tempdir().unwrap();
+    keygen(directory.path()).unwrap();
+    private_file::assert_private(&File::open(directory.path().join(KEY_FILE)).unwrap());
+    fs::write(directory.path().join("plain"), b"private payload").unwrap();
+    encrypt(directory.path(), Path::new("plain"), Path::new("cipher")).unwrap();
+    decrypt(directory.path(), Path::new("cipher"), Path::new("restored")).unwrap();
+    private_file::assert_private(&File::open(directory.path().join("restored")).unwrap());
 }

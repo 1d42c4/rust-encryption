@@ -109,7 +109,8 @@ impl NewOutput {
         let parent = path
             .parent()
             .context("output path does not have a parent directory")?;
-        let temporary = tempfile::NamedTempFile::new_in(parent)
+        let temporary = tempfile::Builder::new()
+            .make_in(parent, crate::private_file::create_private)
             .with_context(|| format!("cannot create temporary output in '{}'", parent.display()))?;
         Ok(Self {
             path: path.to_owned(),
@@ -264,4 +265,16 @@ mod tests {
             1
         );
     }
+}
+
+#[cfg(all(test, windows))]
+#[test]
+fn staged_and_published_outputs_have_protected_windows_permissions() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("output");
+    let mut output = NewOutput::create(&path).unwrap();
+    crate::private_file::assert_private(output.writer().as_file());
+    output.writer().write_all(b"private plaintext").unwrap();
+    output.finish().unwrap();
+    crate::private_file::assert_private(&File::open(path).unwrap());
 }

@@ -188,8 +188,10 @@ dependencies = [
  "anyhow",
  "clap",
  "proptest",
+ "same-file",
  "sha2 0.10.9",
  "tempfile",
+ "windows-sys",
 ]
 
 [[package]]

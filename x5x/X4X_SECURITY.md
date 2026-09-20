@@ -86,3 +86,9 @@ forensic recovery remain outside the erasure guarantees.
 Version 1 constants and byte layout must not change. A future incompatible
 format must use another version byte and a separate parser. New parameter
 values cannot be silently accepted where version 1 requires rejection.
+
+New keys and temporary outputs are private from creation: Unix mode `0600`, or
+a protected Windows DACL allowing only the file owner and SYSTEM. The DACL
+also protects OTP replacement files and x4x plaintext staging. Existing files
+keep their current permissions. Windows API calls are isolated in
+`src/private_file.rs`; unsafe code remains denied elsewhere.
